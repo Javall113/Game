@@ -1,4 +1,6 @@
 import SpriteKit
+import AudioToolbox
+import UIKit
 
 final class GameScene: SKScene, SKPhysicsContactDelegate {
 
@@ -9,18 +11,59 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         static let bad: UInt32 = 1 << 2
     }
 
+    private enum GameMode: String {
+        case easy = "Легко"
+        case normal = "Нормально"
+        case hard = "Сложно"
+
+        var spawnInterval: TimeInterval {
+            switch self {
+            case .easy: return 0.85
+            case .normal: return 0.6
+            case .hard: return 0.42
+            }
+        }
+
+        var badChance: Int {
+            switch self {
+            case .easy: return 24
+            case .normal: return 38
+            case .hard: return 52
+            }
+        }
+
+        var baseSpeed: CGFloat {
+            switch self {
+            case .easy: return 260
+            case .normal: return 340
+            case .hard: return 440
+            }
+        }
+    }
+
     private let laneCount = 5
     private var laneXPositions: [CGFloat] = []
     private var currentLane = 2
 
     private var player = SKShapeNode(circleOfRadius: 22)
-    private var scoreLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
-    private var statusLabel = SKLabelNode(fontNamed: "AvenirNext-Medium")
+    private let scoreLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
+    private let modeLabel = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+    private let statusLabel = SKLabelNode(fontNamed: "AvenirNext-Medium")
 
     private var score = 0
+    private var bestScore = 0
+    private var level = 1
     private var isGameOver = false
+    private var isInMenu = true
+
+    private var selectedMode: GameMode = .normal
+    private var soundsEnabled = true
+    private var vibrationEnabled = true
 
     private var spawnTimer: Timer?
+
+    private let menuContainer = SKNode()
+    private let settingsContainer = SKNode()
 
     override func didMove(to view: SKView) {
         removeAllChildren()
@@ -32,30 +75,32 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         backgroundColor = .black
         setupNebulaBackground()
         setupLanes()
-        setupUI()
+        setupTopHUD()
         setupPlayer()
-        startGameLoop()
+        setupMenu()
+        setupSettings()
+        showMenu()
     }
 
     private func setupNebulaBackground() {
         let sky = SKShapeNode(rectOf: CGSize(width: size.width * 1.2, height: size.height * 1.2))
-        sky.fillColor = SKColor(red: 0.07, green: 0.04, blue: 0.15, alpha: 1)
+        sky.fillColor = SKColor(red: 0.05, green: 0.03, blue: 0.14, alpha: 1)
         sky.strokeColor = .clear
         sky.position = CGPoint(x: frame.midX, y: frame.midY)
         sky.zPosition = -20
         addChild(sky)
 
-        for _ in 0..<60 {
-            let star = SKShapeNode(circleOfRadius: CGFloat.random(in: 1.2...3.0))
+        for _ in 0..<80 {
+            let star = SKShapeNode(circleOfRadius: CGFloat.random(in: 1.2...3.2))
             star.fillColor = .white
             star.strokeColor = .clear
-            star.alpha = CGFloat.random(in: 0.25...0.9)
+            star.alpha = CGFloat.random(in: 0.2...0.95)
             star.position = CGPoint(x: CGFloat.random(in: frame.minX...frame.maxX),
                                     y: CGFloat.random(in: frame.minY...frame.maxY))
             star.zPosition = -10
             let pulse = SKAction.sequence([
-                .fadeAlpha(to: CGFloat.random(in: 0.1...0.4), duration: Double.random(in: 0.6...1.4)),
-                .fadeAlpha(to: CGFloat.random(in: 0.5...1.0), duration: Double.random(in: 0.6...1.4))
+                .fadeAlpha(to: CGFloat.random(in: 0.1...0.35), duration: Double.random(in: 0.5...1.4)),
+                .fadeAlpha(to: CGFloat.random(in: 0.45...1.0), duration: Double.random(in: 0.5...1.4))
             ])
             star.run(.repeatForever(pulse))
             addChild(star)
@@ -70,7 +115,7 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
 
         for laneX in laneXPositions {
             let beam = SKShapeNode(rectOf: CGSize(width: 4, height: size.height * 1.1), cornerRadius: 2)
-            beam.fillColor = SKColor.cyan.withAlphaComponent(0.14)
+            beam.fillColor = SKColor.cyan.withAlphaComponent(0.17)
             beam.strokeColor = .clear
             beam.position = CGPoint(x: laneX, y: frame.midY)
             beam.zPosition = -5
@@ -78,20 +123,28 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         }
     }
 
-    private func setupUI() {
+    private func setupTopHUD() {
         scoreLabel.text = "Энергия: 0"
-        scoreLabel.fontSize = 30
+        scoreLabel.fontSize = 28
         scoreLabel.fontColor = .white
         scoreLabel.horizontalAlignmentMode = .left
         scoreLabel.position = CGPoint(x: frame.minX + 20, y: frame.maxY - 58)
-        scoreLabel.zPosition = 30
+        scoreLabel.zPosition = 40
         addChild(scoreLabel)
 
-        statusLabel.text = "Тап слева/справа, чтобы смещать ядро"
+        modeLabel.text = "Режим: \(selectedMode.rawValue)"
+        modeLabel.fontSize = 20
+        modeLabel.fontColor = SKColor.cyan.withAlphaComponent(0.9)
+        modeLabel.horizontalAlignmentMode = .right
+        modeLabel.position = CGPoint(x: frame.maxX - 20, y: frame.maxY - 56)
+        modeLabel.zPosition = 40
+        addChild(modeLabel)
+
+        statusLabel.text = ""
         statusLabel.fontSize = 21
-        statusLabel.fontColor = SKColor.white.withAlphaComponent(0.85)
+        statusLabel.fontColor = SKColor.white.withAlphaComponent(0.88)
         statusLabel.position = CGPoint(x: frame.midX, y: frame.minY + 56)
-        statusLabel.zPosition = 30
+        statusLabel.zPosition = 40
         addChild(statusLabel)
     }
 
@@ -104,6 +157,14 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         currentLane = laneCount / 2
         player.position = CGPoint(x: laneXPositions[currentLane], y: frame.minY + 130)
         player.zPosition = 20
+        player.alpha = 0
+
+        let aura = SKShapeNode(circleOfRadius: 38)
+        aura.fillColor = .clear
+        aura.strokeColor = SKColor.systemGreen.withAlphaComponent(0.25)
+        aura.lineWidth = 3
+        aura.name = "playerAura"
+        player.addChild(aura)
 
         let body = SKPhysicsBody(circleOfRadius: 22)
         body.isDynamic = false
@@ -114,37 +175,142 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         addChild(player)
     }
 
-    private func startGameLoop() {
+    private func setupMenu() {
+        menuContainer.removeAllChildren()
+        menuContainer.zPosition = 120
+
+        let panel = SKShapeNode(rectOf: CGSize(width: size.width * 0.86, height: size.height * 0.6), cornerRadius: 32)
+        panel.fillColor = SKColor(red: 0.08, green: 0.08, blue: 0.16, alpha: 0.92)
+        panel.strokeColor = SKColor.cyan.withAlphaComponent(0.4)
+        panel.lineWidth = 2
+        panel.position = CGPoint(x: frame.midX, y: frame.midY)
+        menuContainer.addChild(panel)
+
+        let title = SKLabelNode(fontNamed: "AvenirNext-Heavy")
+        title.text = "⚡️ Core Runner"
+        title.fontSize = 40
+        title.position = CGPoint(x: frame.midX, y: frame.midY + 170)
+        title.zPosition = 121
+        menuContainer.addChild(title)
+
+        let subtitle = SKLabelNode(fontNamed: "AvenirNext-Medium")
+        subtitle.text = "Уклоняйся, собирай энергию, повышай уровень"
+        subtitle.fontSize = 18
+        subtitle.fontColor = SKColor.white.withAlphaComponent(0.84)
+        subtitle.position = CGPoint(x: frame.midX, y: frame.midY + 130)
+        subtitle.zPosition = 121
+        menuContainer.addChild(subtitle)
+
+        menuContainer.addChild(makeButton(title: "▶️ Играть", name: "menuStart", y: frame.midY + 58))
+        menuContainer.addChild(makeButton(title: "🎚 Настройки", name: "menuSettings", y: frame.midY + 0))
+        menuContainer.addChild(makeButton(title: "🧠 Сложность: \(selectedMode.rawValue)", name: "menuMode", y: frame.midY - 58))
+
+        let best = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        best.text = "Лучший счёт: \(bestScore)"
+        best.fontSize = 24
+        best.fontColor = .systemYellow
+        best.name = "menuBestScore"
+        best.position = CGPoint(x: frame.midX, y: frame.midY - 150)
+        best.zPosition = 121
+        menuContainer.addChild(best)
+
+        addChild(menuContainer)
+    }
+
+    private func setupSettings() {
+        settingsContainer.removeAllChildren()
+        settingsContainer.zPosition = 130
+
+        let panel = SKShapeNode(rectOf: CGSize(width: size.width * 0.82, height: size.height * 0.52), cornerRadius: 26)
+        panel.fillColor = SKColor(red: 0.06, green: 0.07, blue: 0.15, alpha: 0.96)
+        panel.strokeColor = SKColor.systemPurple.withAlphaComponent(0.55)
+        panel.lineWidth = 2
+        panel.position = CGPoint(x: frame.midX, y: frame.midY)
+        settingsContainer.addChild(panel)
+
+        let title = SKLabelNode(fontNamed: "AvenirNext-Bold")
+        title.text = "Настройки"
+        title.fontSize = 34
+        title.position = CGPoint(x: frame.midX, y: frame.midY + 130)
+        settingsContainer.addChild(title)
+
+        settingsContainer.addChild(makeButton(title: toggleText(prefix: "🔊 Звук", enabled: soundsEnabled), name: "toggleSound", y: frame.midY + 42))
+        settingsContainer.addChild(makeButton(title: toggleText(prefix: "📳 Вибрация", enabled: vibrationEnabled), name: "toggleVibration", y: frame.midY - 16))
+        settingsContainer.addChild(makeButton(title: "◀️ Назад", name: "settingsBack", y: frame.midY - 100))
+
+        settingsContainer.isHidden = true
+        addChild(settingsContainer)
+    }
+
+    private func showMenu() {
+        isInMenu = true
+        isGameOver = false
+        player.alpha = 0
+        statusLabel.text = ""
+        menuContainer.isHidden = false
+        settingsContainer.isHidden = true
+        updateMenuLabels()
+    }
+
+    private func startGame() {
+        isInMenu = false
         isGameOver = false
         score = 0
+        level = 1
         updateScoreLabel()
 
+        enumerateChildNodes(withName: "//*") { node, _ in
+            if node.name == "bad" || node.name == "good" {
+                node.removeFromParent()
+            }
+        }
+
+        setupPlayer()
+        player.alpha = 1
+        statusLabel.text = "Тап слева/справа. Уровень: \(level)"
+        modeLabel.text = "Режим: \(selectedMode.rawValue)"
+        menuContainer.isHidden = true
+        settingsContainer.isHidden = true
+
         spawnTimer?.invalidate()
-        spawnTimer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { [weak self] _ in
+        spawnTimer = Timer.scheduledTimer(withTimeInterval: selectedMode.spawnInterval, repeats: true) { [weak self] _ in
             self?.spawnObject()
         }
 
         run(.repeatForever(.sequence([
             .wait(forDuration: 1.0),
             .run { [weak self] in
-                self?.score += 1
-                self?.updateScoreLabel()
+                self?.tickScore()
             }
         ])), withKey: "passiveScore")
     }
 
-    private func spawnObject() {
-        guard !isGameOver else { return }
+    private func tickScore() {
+        guard !isGameOver && !isInMenu else { return }
+        score += 1 + level / 2
+        let newLevel = (score / 35) + 1
+        if newLevel > level {
+            level = newLevel
+            statusLabel.text = "🚀 Уровень \(level)! Скорость растёт"
+            playFeedback(isPositive: true)
+        }
+        updateScoreLabel()
+    }
 
-        let isBad = Int.random(in: 0..<100) < 35
-        let radius: CGFloat = isBad ? 20 : 14
+    private func spawnObject() {
+        guard !isGameOver && !isInMenu else { return }
+
+        let dynamicBadChance = min(78, selectedMode.badChance + level * 2)
+        let isBad = Int.random(in: 0..<100) < dynamicBadChance
+        let radius: CGFloat = isBad ? CGFloat.random(in: 19...24) : CGFloat.random(in: 12...16)
+
         let node = SKShapeNode(circleOfRadius: radius)
         node.fillColor = isBad ? .systemRed : .systemYellow
         node.strokeColor = isBad ? .white : .orange
         node.lineWidth = 2
 
         let lane = Int.random(in: 0..<laneCount)
-        node.position = CGPoint(x: laneXPositions[lane], y: frame.maxY + 40)
+        node.position = CGPoint(x: laneXPositions[lane], y: frame.maxY + 50)
         node.zPosition = 15
         node.name = isBad ? "bad" : "good"
 
@@ -153,36 +319,120 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         body.categoryBitMask = isBad ? PhysicsMask.bad : PhysicsMask.good
         body.contactTestBitMask = PhysicsMask.player
         body.collisionBitMask = PhysicsMask.none
-        body.velocity = CGVector(dx: 0, dy: -CGFloat.random(in: 260...360))
+        let speedBoost = CGFloat(level - 1) * 18
+        let randomSpread: CGFloat = isBad ? 70 : 40
+        body.velocity = CGVector(dx: 0, dy: -(selectedMode.baseSpeed + speedBoost + CGFloat.random(in: 0...randomSpread)))
         body.linearDamping = 0
         node.physicsBody = body
+
+        if isBad && level > 2 && Bool.random() {
+            let warning = SKShapeNode(circleOfRadius: radius + 10)
+            warning.strokeColor = SKColor.red.withAlphaComponent(0.35)
+            warning.fillColor = .clear
+            warning.lineWidth = 2
+            warning.name = "halo"
+            node.addChild(warning)
+            warning.run(.repeatForever(.sequence([
+                .scale(to: 1.12, duration: 0.2),
+                .scale(to: 1.0, duration: 0.2)
+            ])))
+        }
 
         addChild(node)
 
         node.run(.sequence([
-            .wait(forDuration: 4.5),
+            .wait(forDuration: 4.6),
             .removeFromParent()
         ]))
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard !isGameOver, let touch = touches.first else {
-            if isGameOver {
-                restartGame()
-            }
+        guard let touch = touches.first else { return }
+        let location = touch.location(in: self)
+
+        if isInMenu {
+            handleMenuTap(at: location)
             return
         }
 
-        let location = touch.location(in: self)
+        if isGameOver {
+            showMenu()
+            return
+        }
+
         if location.x < frame.midX {
             currentLane = max(0, currentLane - 1)
         } else {
             currentLane = min(laneCount - 1, currentLane + 1)
         }
 
-        let move = SKAction.moveTo(x: laneXPositions[currentLane], duration: 0.12)
+        let move = SKAction.moveTo(x: laneXPositions[currentLane], duration: 0.1)
         move.timingMode = .easeOut
         player.run(move)
+
+        let tilt = SKAction.sequence([
+            .scaleX(to: 1.08, y: 0.92, duration: 0.05),
+            .scaleX(to: 1.0, y: 1.0, duration: 0.05)
+        ])
+        player.run(tilt)
+    }
+
+    private func handleMenuTap(at point: CGPoint) {
+        let tappedNodes = nodes(at: point)
+        let names = tappedNodes.compactMap { $0.name }
+
+        if names.contains("menuStart") {
+            playTapSound()
+            startGame()
+        } else if names.contains("menuSettings") {
+            playTapSound()
+            menuContainer.isHidden = true
+            settingsContainer.isHidden = false
+        } else if names.contains("menuMode") {
+            playTapSound()
+            cycleMode()
+        } else if names.contains("settingsBack") {
+            playTapSound()
+            settingsContainer.isHidden = true
+            menuContainer.isHidden = false
+            updateMenuLabels()
+        } else if names.contains("toggleSound") {
+            soundsEnabled.toggle()
+            playTapSound()
+            updateSettingsLabels()
+        } else if names.contains("toggleVibration") {
+            vibrationEnabled.toggle()
+            playTapSound()
+            updateSettingsLabels()
+        }
+    }
+
+    private func cycleMode() {
+        switch selectedMode {
+        case .easy: selectedMode = .normal
+        case .normal: selectedMode = .hard
+        case .hard: selectedMode = .easy
+        }
+        updateMenuLabels()
+    }
+
+    private func updateMenuLabels() {
+        if let modeLabel = menuContainer.childNode(withName: "//menuModeLabel") as? SKLabelNode {
+            modeLabel.text = "🧠 Сложность: \(selectedMode.rawValue)"
+        }
+        if let best = menuContainer.childNode(withName: "//menuBestScore") as? SKLabelNode {
+            best.text = "Лучший счёт: \(bestScore)"
+        }
+        modeLabel.text = "Режим: \(selectedMode.rawValue)"
+    }
+
+    private func updateSettingsLabels() {
+        if let soundLabel = settingsContainer.childNode(withName: "//toggleSoundLabel") as? SKLabelNode {
+            soundLabel.text = toggleText(prefix: "🔊 Звук", enabled: soundsEnabled)
+        }
+        if let vibroLabel = settingsContainer.childNode(withName: "//toggleVibrationLabel") as? SKLabelNode {
+            vibroLabel.text = toggleText(prefix: "📳 Вибрация", enabled: vibrationEnabled)
+        }
     }
 
     func didBegin(_ contact: SKPhysicsContact) {
@@ -193,9 +443,10 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         otherBody.node?.removeFromParent()
 
         if otherBody.categoryBitMask == PhysicsMask.good {
-            score += 5
+            score += 8 + level
             updateScoreLabel()
-            player.run(.sequence([.scale(to: 1.2, duration: 0.08), .scale(to: 1.0, duration: 0.08)]))
+            player.run(.sequence([.scale(to: 1.25, duration: 0.07), .scale(to: 1.0, duration: 0.1)]))
+            playFeedback(isPositive: true)
         } else if otherBody.categoryBitMask == PhysicsMask.bad {
             triggerGameOver()
         }
@@ -209,28 +460,63 @@ final class GameScene: SKScene, SKPhysicsContactDelegate {
         spawnTimer = nil
         removeAction(forKey: "passiveScore")
 
+        bestScore = max(bestScore, score)
         player.fillColor = .gray
         player.run(.repeat(.sequence([.fadeAlpha(to: 0.2, duration: 0.12), .fadeAlpha(to: 1.0, duration: 0.12)]), count: 4))
 
-        statusLabel.text = "💥 Перегрев! Счёт: \(score). Нажми для рестарта"
-    }
-
-    private func restartGame() {
-        enumerateChildNodes(withName: "//*") { node, _ in
-            if node.name == "bad" || node.name == "good" {
-                node.removeFromParent()
-            }
-        }
-
-        statusLabel.text = "Тап слева/справа, чтобы смещать ядро"
-        player.alpha = 1
-        player.fillColor = .systemGreen
-        setupPlayer()
-        startGameLoop()
+        statusLabel.text = "💥 Перегрев! Счёт: \(score). Тап для меню"
+        playFeedback(isPositive: false)
+        updateMenuLabels()
     }
 
     private func updateScoreLabel() {
         scoreLabel.text = "Энергия: \(score)"
+    }
+
+    private func makeButton(title: String, name: String, y: CGFloat) -> SKNode {
+        let container = SKNode()
+        container.name = name
+        container.position = CGPoint(x: frame.midX, y: y)
+
+        let button = SKShapeNode(rectOf: CGSize(width: size.width * 0.62, height: 48), cornerRadius: 14)
+        button.fillColor = SKColor(red: 0.14, green: 0.17, blue: 0.29, alpha: 0.9)
+        button.strokeColor = SKColor.white.withAlphaComponent(0.25)
+        button.lineWidth = 1.4
+        button.name = name
+        container.addChild(button)
+
+        let label = SKLabelNode(fontNamed: "AvenirNext-DemiBold")
+        label.text = title
+        label.fontSize = 20
+        label.verticalAlignmentMode = .center
+        label.name = "\(name)Label"
+        container.addChild(label)
+
+        return container
+    }
+
+    private func playTapSound() {
+        guard soundsEnabled else { return }
+        AudioServicesPlaySystemSound(1104)
+    }
+
+    private func playFeedback(isPositive: Bool) {
+        if soundsEnabled {
+            AudioServicesPlaySystemSound(isPositive ? 1110 : 1025)
+        }
+        guard vibrationEnabled else { return }
+
+        if isPositive {
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
+        } else {
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.error)
+        }
+    }
+
+    private func toggleText(prefix: String, enabled: Bool) -> String {
+        "\(prefix): \(enabled ? "ВКЛ" : "ВЫКЛ")"
     }
 
     deinit {
